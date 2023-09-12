@@ -1,0 +1,15 @@
+[package]
+name = "mumble-embedding"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+aws-config = "0.56"
+aws-sdk-s3 = "0.30"
+aws-smithy-runtime-api = "0.56.1"
+flechasdb = { version = "0.0.1", path = "../flechasdb" }
+tokio = { version = "1.32", features = ["full"] }
+tokio-stream = "0.1"
