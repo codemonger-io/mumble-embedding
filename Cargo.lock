@@ -969,6 +969,8 @@ dependencies = [
  "aws-sdk-s3",
  "aws-smithy-runtime-api",
  "flechasdb",
+ "serde",
+ "serde_json",
  "tokio",
  "tokio-stream",
 ]
@@ -1447,6 +1449,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.106"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cc66a619ed80bf7a0f6b17dd063a84b88f6dea1813737cf469aef1d081142c2"
+dependencies = [
+ "itoa",
+ "ryu",
+ "serde",
 ]
 
 [[package]]
