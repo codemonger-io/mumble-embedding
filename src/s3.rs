@@ -69,7 +69,7 @@ impl ObjectListStream {
 }
 
 impl Stream for ObjectListStream {
-    type Item = String;
+    type Item = aws_sdk_s3::types::Object;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -78,11 +78,12 @@ impl Stream for ObjectListStream {
         println!("polling");
         while self.next_index < self.objects.len() {
             println!("next object");
-            let object = self.objects[self.next_index].clone();
+            let next_index = self.next_index;
             self.next_index += 1;
+            let object = &self.objects[next_index];
             if object.key.is_some() {
-                return Poll::Ready(object.key);
-            } // btw, when key becomes None?
+                return Poll::Ready(Some(object.clone()));
+            } // btw, when does object become None?
         }
         // polls the pending request
         if let Some(pending_request) = self.pending_request.as_mut() {
