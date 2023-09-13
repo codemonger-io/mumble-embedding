@@ -12,9 +12,9 @@ async fn main() -> Result<(), Error> {
     let objects_bucket_name = env::var("OBJECTS_BUCKET_NAME")?;
     println!("objects bucket name: {}", objects_bucket_name);
     let posts = list_posts(&objects_bucket_name, &username).await;
-    let mut posts = posts.into_stream().take(50);
+    let mut posts = posts.take(10);
     while let Some(post) = posts.next().await {
-        println!("{}", post);
+        println!("{}", post.unwrap().content);
     }
     Ok(())
 }
