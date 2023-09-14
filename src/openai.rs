@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::error::Error;
+
 /// Endpoint for embedding.
 pub const EMBEDDING_ENDPOINT: &str = "https://api.openai.com/v1/embeddings";
 
@@ -46,6 +48,25 @@ pub struct EmbeddingData {
 /// API usage.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Usage {
-    prompt_tokens: u64,
-    total_tokens: u64,
+    pub prompt_tokens: u64,
+    pub total_tokens: u64,
+}
+
+/// Creates an embedding vector of given texts.
+///
+/// Uses `reqwest` to send a POST request to the OpenAI API.
+pub async fn create_embeddings(
+    request: &EmbeddingRequestBody,
+    api_key: String,
+) -> Result<EmbeddingResponseBody, Error> {
+    let res = reqwest::Client::new()
+        .post(EMBEDDING_ENDPOINT)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .json(request)
+        .send().await?;
+    if !res.status().is_success() {
+        return Err(Error::HttpError(res.status()));
+    }
+    let res = res.json::<EmbeddingResponseBody>().await?;
+    Ok(res)
 }
