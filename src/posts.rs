@@ -1,12 +1,11 @@
 //! Dealing with posts (mumblings).
 
 use serde::{Deserialize, Serialize};
-use tokio_stream::Stream;
+use tokio_stream::{Stream, StreamExt};
 
 use crate::error::Error;
 use crate::openai::{EmbeddingRequestBody, create_embeddings};
 use crate::s3::ObjectList;
-use crate::streams::StreamAsyncExt;
 
 /// Post.
 #[derive(Clone, Debug, Deserialize)]
@@ -49,7 +48,7 @@ pub async fn list_posts(
         client,
     )
         .into_stream()
-        .map_async(move |o| load_post(
+        .then(move |o| load_post(
             bucket_name.clone(),
             o,
             config.clone(),
