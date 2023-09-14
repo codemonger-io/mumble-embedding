@@ -8,10 +8,10 @@ use tokio_stream::Stream;
 /// Asynchronous extensions for `Stream`.
 pub trait StreamAsyncExt: Stream {
     /// Maps items with a given async function.
-    fn map_async<F, FT, T>(self, f: F) -> Map<Self, F, FT>
+    fn map_async<F, FUT, T>(self, f: F) -> Map<Self, F, FUT>
     where
-        F: FnMut(Self::Item) -> FT,
-        FT: Future<Output = T>,
+        F: FnMut(Self::Item) -> FUT,
+        FUT: Future<Output = T>,
         Self: Sized,
     {
         Map::new(self, f)
@@ -21,20 +21,20 @@ pub trait StreamAsyncExt: Stream {
 impl<ST: Stream> StreamAsyncExt for ST {}
 
 /// Mapping stream.
-pub struct Map<ST, F, FT>
+pub struct Map<ST, F, FUT>
 where
     ST: Stream + ?Sized,
-    F: FnMut(ST::Item) -> FT,
+    F: FnMut(ST::Item) -> FUT,
 {
     stream: Pin::<Box<ST>>,
-    pending_map: Option<Pin<Box<FT>>>,
+    pending_map: Option<Pin<Box<FUT>>>,
     f: F,
 }
 
-impl<ST, F, FT> Map<ST, F, FT>
+impl<ST, F, FUT> Map<ST, F, FUT>
 where
     ST: Stream,
-    F: FnMut(ST::Item) -> FT,
+    F: FnMut(ST::Item) -> FUT,
 {
     fn new(stream: ST, f: F) -> Self {
         Self {
@@ -45,11 +45,11 @@ where
     }
 }
 
-impl<ST, F, FT, T> Stream for Map<ST, F, FT>
+impl<ST, F, FUT, T> Stream for Map<ST, F, FUT>
 where
     ST: Stream,
-    F: FnMut(ST::Item) -> FT,
-    FT: Future<Output = T>,
+    F: FnMut(ST::Item) -> FUT,
+    FUT: Future<Output = T>,
     Self: Unpin, // necessary for <DerefMut as Pin>
 {
     type Item = T;
