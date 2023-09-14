@@ -16,6 +16,17 @@ pub trait StreamAsyncExt: Stream {
     {
         Map::new(self, f)
     }
+
+    /// Flattens `Result`s whose successful value is an iterable.
+    ///
+    /// Retains an error as a single item.
+    fn flatten_results<T, E>(self) -> FlattenResults<Self, T, E>
+    where
+        Self: Stream<Item = Result<T, E>> + Sized,
+        T: IntoIterator,
+    {
+        FlattenResults::new(self)
+    }
 }
 
 impl<ST: Stream> StreamAsyncExt for ST {}
@@ -74,6 +85,70 @@ where
                     self.pending_map = Some(Box::pin((self.f)(item)));
                     cx.waker().wake_by_ref();
                     Poll::Pending
+                },
+                Poll::Ready(None) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            }
+        }
+    }
+}
+
+/// Flattening stream.
+pub struct FlattenResults<ST, T, E>
+where
+    ST: Stream<Item = Result<T, E>> + ?Sized,
+    T: IntoIterator,
+{
+    stream: Pin::<Box<ST>>,
+    iterator: Option<T::IntoIter>,
+}
+
+impl<ST, T, E> FlattenResults<ST, T, E>
+where
+    ST: Stream<Item = Result<T, E>>,
+    T: IntoIterator,
+{
+    fn new(stream: ST) -> Self {
+        Self {
+            stream: Box::pin(stream),
+            iterator: None,
+        }
+    }
+}
+
+impl<ST, T, E> Stream for FlattenResults<ST, T, E>
+where
+    ST: Stream<Item = Result<T, E>>,
+    T: IntoIterator,
+    Self: Unpin, // necessary for <DerefMut as Pin>
+{
+    type Item = Result<T::Item, E>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Self::Item>> {
+        if let Some(iterator) = self.iterator.as_mut() {
+            println!("flattening iterator");
+            if let Some(item) = iterator.next() {
+                Poll::Ready(Some(Ok(item)))
+            } else {
+                self.iterator = None;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        } else {
+            println!("polling stream");
+            match Pin::new(&mut self.stream).poll_next(cx) {
+                Poll::Ready(Some(result)) => {
+                    match result {
+                        Ok(iterable) => {
+                            self.iterator = Some(iterable.into_iter());
+                            cx.waker().wake_by_ref();
+                            Poll::Pending
+                        },
+                        Err(err) => Poll::Ready(Some(Err(err))),
+                    }
                 },
                 Poll::Ready(None) => Poll::Ready(None),
                 Poll::Pending => Poll::Pending,
