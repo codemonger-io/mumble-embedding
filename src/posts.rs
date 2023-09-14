@@ -1,6 +1,6 @@
 //! Dealing with posts (mumblings).
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio_stream::Stream;
 
 use crate::error::Error;
@@ -73,58 +73,52 @@ async fn load_post(
     Ok(post)
 }
 
-/// Embedding for a post.
-///
-/// You can deref this as `Post`.
-#[derive(Clone, Debug)]
-pub struct PostEmbedding {
-    post: Post,
-    embedding: Vec<f64>,
+/// Embedding of a content.
+#[derive(Clone, Debug, Serialize)]
+pub struct Embedding {
+    /// ID of the source object.
+    pub id: String,
+    /// Content that produced the embedding.
+    pub content: String,
+    /// Embedding vector.
+    pub embedding: Vec<f64>,
 }
 
-impl PostEmbedding {
-    /// Creates embedding for a given post.
-    pub async fn create_batch(
-        posts: Vec<Post>,
-        api_key: String,
-    ) -> Result<Vec<PostEmbedding>, Error> {
-        let request = EmbeddingRequestBody {
-            model: format!("text-embedding-ada-002"),
-            input: posts.iter()
-                .map(|p| {
-                    if let Some(source) = p.source.as_ref() {
-                        source.content.clone()
-                    } else {
-                        p.content.clone()
-                    }
-                })
-                .collect(),
-            user: Some(format!("mumble_embedding")),
-        };
-        let res = create_embeddings(&request, api_key).await?;
-        println!("usage: {:?}", res.usage);
-        let mut embeddings = res.data;
-        if posts.len() != embeddings.len() {
-            return Err(Error::InvalidData(
-                format!("failed to create embeddings of one or more posts"),
-            ));
-        }
-        embeddings.sort_by_key(|e| e.index);
-        let post_embeddings = posts.into_iter()
-            .zip(embeddings.into_iter())
-            .map(|(p, e)| PostEmbedding {
-                post: p,
-                embedding: e.embedding,
+/// Creates embeddings for given posts.
+pub async fn create_embeddings_for_posts(
+    posts: Vec<Post>,
+    api_key: String,
+) -> Result<Vec<Embedding>, Error> {
+    let request = EmbeddingRequestBody {
+        model: format!("text-embedding-ada-002"),
+        input: posts.iter()
+            .map(|p| {
+                if let Some(source) = p.source.as_ref() {
+                    source.content.clone()
+                } else {
+                    p.content.clone()
+                }
             })
-            .collect();
-        Ok(post_embeddings)
+            .collect(),
+        user: Some(format!("mumble_embedding")),
+    };
+    let res = create_embeddings(&request, api_key).await?;
+    println!("usage: {:?}", res.usage);
+    let mut data = res.data;
+    if posts.len() != data.len() {
+        return Err(Error::InvalidData(
+            format!("failed to create embeddings of one or more posts"),
+        ));
     }
-}
-
-impl core::ops::Deref for PostEmbedding {
-    type Target = Post;
-
-    fn deref(&self) -> &Self::Target {
-        &self.post
-    }
+    data.sort_by_key(|d| d.index);
+    let embeddings = posts.into_iter()
+        .zip(request.input.into_iter())
+        .zip(data.into_iter())
+        .map(|((p, content), d)| Embedding {
+            id: p.id,
+            content,
+            embedding: d.embedding,
+        })
+        .collect();
+    Ok(embeddings)
 }
