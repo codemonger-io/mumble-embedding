@@ -4,7 +4,9 @@
 #[derive(Debug)]
 pub enum Error {
     InvalidData(String),
+    HttpError(reqwest::StatusCode),
     SerdeJsonError(serde_json::Error),
+    ReqwestError(reqwest::Error),
     AwsSdkError(String),
 }
 
@@ -14,7 +16,9 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::InvalidData(s) => write!(f, "Invalid data: {}", s),
+            Error::HttpError(s) => write!(f, "HTTP error: {}", s),
             Error::SerdeJsonError(e) => write!(f, "serde_json::Error: {}", e),
+            Error::ReqwestError(e) => write!(f, "reqwest::Error: {}", e),
             Error::AwsSdkError(s) => write!(f, "AWS SDK error: {}", s),
         }
     }
@@ -23,6 +27,12 @@ impl std::fmt::Display for Error {
 impl From<serde_json::Error> for Error {
     fn from(e: serde_json::Error) -> Self {
         Error::SerdeJsonError(e)
+    }
+}
+
+impl From<reqwest::Error> for Error {
+    fn from(e: reqwest::Error) -> Self {
+        Error::ReqwestError(e)
     }
 }
 
