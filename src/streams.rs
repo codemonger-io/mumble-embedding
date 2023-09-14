@@ -129,7 +129,6 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         if let Some(iterator) = self.iterator.as_mut() {
-            println!("flattening iterator");
             if let Some(item) = iterator.next() {
                 Poll::Ready(Some(Ok(item)))
             } else {
@@ -138,7 +137,6 @@ where
                 Poll::Pending
             }
         } else {
-            println!("polling stream");
             match Pin::new(&mut self.stream).poll_next(cx) {
                 Poll::Ready(Some(result)) => {
                     match result {
