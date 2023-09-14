@@ -21,6 +21,7 @@ pub struct ObjectList {
     bucket_name: String,
     prefix: String,
     s3: aws_sdk_s3::Client,
+    max_keys: i32,
 }
 
 impl ObjectList {
@@ -34,6 +35,7 @@ impl ObjectList {
             bucket_name: bucket_name.into(),
             prefix: prefix.into(),
             s3,
+            max_keys: 100,
         }
     }
 
@@ -57,7 +59,7 @@ impl ObjectListStream {
         let pending_request = config.s3.list_objects_v2()
             .bucket(config.bucket_name.clone())
             .prefix(config.prefix.clone())
-            .max_keys(10)
+            .max_keys(config.max_keys)
             .send();
         Self {
             config,
@@ -75,9 +77,7 @@ impl Stream for ObjectListStream {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        println!("polling");
         while self.next_index < self.objects.len() {
-            println!("next object");
             let next_index = self.next_index;
             self.next_index += 1;
             let object = &self.objects[next_index];
@@ -89,7 +89,6 @@ impl Stream for ObjectListStream {
         if let Some(pending_request) = self.pending_request.as_mut() {
             match Pin::new(pending_request).poll(cx) {
                 Poll::Ready(Ok(results)) => {
-                    println!("ready");
                     self.objects = results.contents.unwrap_or_default();
                     self.next_index = 0;
                     let last_key = self.objects.last()
@@ -98,7 +97,7 @@ impl Stream for ObjectListStream {
                         let pending_request = self.config.s3.list_objects_v2()
                             .bucket(self.config.bucket_name.clone())
                             .prefix(self.config.prefix.clone())
-                            .max_keys(10)
+                            .max_keys(self.config.max_keys)
                             .set_start_after(last_key)
                             .send();
                         self.pending_request = Some(Box::pin(pending_request));
@@ -108,14 +107,8 @@ impl Stream for ObjectListStream {
                     cx.waker().wake_by_ref();
                     Poll::Pending
                 },
-                Poll::Ready(_) => {
-                    println!("error");
-                    return Poll::Ready(None)
-                }
-                Poll::Pending => {
-                    println!("pending");
-                    return Poll::Pending
-                },
+                Poll::Ready(_) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
             }
         } else {
             Poll::Ready(None)
