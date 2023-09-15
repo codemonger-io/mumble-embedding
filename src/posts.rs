@@ -73,7 +73,7 @@ async fn load_post(
 }
 
 /// Embedding of a content.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Embedding {
     /// ID of the source object.
     pub id: String,
