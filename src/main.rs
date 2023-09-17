@@ -8,6 +8,8 @@ use url::Url;
 
 use flechasdb::db::{DatabaseBuilder, DatabaseBuilderEvent, DatabaseQueryEvent};
 use flechasdb::db::proto::serialize_database;
+use flechasdb::db::stored;
+use flechasdb::db::stored::{DatabaseStore, LoadDatabase};
 use flechasdb::io::LocalFileSystem;
 use flechasdb::vector::BlockVectorSet;
 
@@ -43,6 +45,13 @@ enum Commands {
         /// Test query.
         test_query: Option<String>,
     },
+    /// Queries a vector database.
+    Query {
+        /// Path to the database to be loaded.
+        db_path: String,
+        /// Query.
+        query_text: String,
+    },
 }
 
 #[tokio::main]
@@ -54,6 +63,9 @@ async fn main() -> Result<(), Error> {
         },
         Commands::Build { in_dir, out_dir, test_query } => {
             build(in_dir, out_dir, test_query).await?;
+        },
+        Commands::Query { db_path, query_text } => {
+            query(db_path, query_text).await?;
         },
     }
     Ok(())
@@ -115,8 +127,8 @@ async fn build(
     const NUM_PARTITIONS: usize = 1;
     const NUM_DIVISIONS: usize = 12;
     const NUM_CODES: usize = 10;
+    let mut embeddings: Vec<Embedding> = Vec::with_capacity(RESERVED_VECTORS);
     let mut data: Vec<f32> = Vec::with_capacity(RESERVED_VECTORS * VECTOR_SIZE);
-    let mut contents: Vec<String> = Vec::with_capacity(RESERVED_VECTORS);
     for entry in read_dir(in_dir)? {
         let entry = entry?;
         println!("loading: {:?}", entry.file_name());
@@ -126,12 +138,12 @@ async fn build(
             bail!("invalid vector size: {}", embedding.embedding.len());
         }
         data.extend(embedding.embedding.iter().map(|v| *v as f32));
-        contents.push(embedding.content);
+        embeddings.push(embedding);
     }
     let vs = BlockVectorSet::chunk(data, VECTOR_SIZE.try_into()?)?;
     let time = std::time::Instant::now();
     let mut event_time = std::time::Instant::now();
-    let db = DatabaseBuilder::new(vs)
+    let mut db = DatabaseBuilder::new(vs)
         .with_partitions(NUM_PARTITIONS.try_into().unwrap())
         .with_divisions(NUM_DIVISIONS.try_into().unwrap())
         .with_clusters(NUM_CODES.try_into().unwrap())
@@ -171,6 +183,10 @@ async fn build(
             };
         }))?;
     println!("built database in {} μs", time.elapsed().as_micros());
+    // assigns content IDs to vectors
+    for (i, embedding) in embeddings.iter().enumerate() {
+        db.set_attribute_at(i, ("content_id", embedding.id.clone()))?;
+    }
 
     println!("saving database to {}", out_dir);
     let mut fs = LocalFileSystem::new(&out_dir);
@@ -233,11 +249,94 @@ async fn build(
             println!(
                 "result[{}]:\ncontent: {}\napprox. distance: {}",
                 i,
-                contents[result.vector_index],
+                embeddings[result.vector_index].content,
                 result.squared_distance,
             );
         }
     }
 
+    Ok(())
+}
+
+async fn query(db_path: String, query_text: String) -> Result<(), Error> {
+    const K: usize = 10; // k-nearest neighbors
+    const NPROBE: usize = 1;
+    // loads the database
+    println!("loading database from {}", db_path);
+    let db_path = Path::new(&db_path);
+    let time = std::time::Instant::now();
+    let db = DatabaseStore::<f32, _>::load_database(
+        LocalFileSystem::new(db_path.parent().unwrap()),
+        db_path.file_name().unwrap(),
+    )?;
+    println!("loaded database in {} μs", time.elapsed().as_micros());
+    println!("creating embedding for the query");
+    let openai_api_key = env::var("OPENAI_API_KEY")
+        .context("no OPENAI_API_KEY set")?;
+    let query_embedding = create_embeddings(
+        &EmbeddingRequestBody {
+            model: "text-embedding-ada-002".to_string(),
+            input: vec![query_text.to_string()],
+            user: Some("mumble_embedding".to_string()),
+        },
+        openai_api_key,
+    ).await?;
+    let query_vector: Vec<f32> = query_embedding.data[0].embedding
+        .iter()
+        .map(|x| *x as f32)
+        .collect();
+    // queries k-NN
+    let time = std::time::Instant::now();
+    let mut event_time = std::time::Instant::now();
+    let results = db.query(
+        &query_vector,
+        K.try_into().unwrap(),
+        NPROBE.try_into().unwrap(),
+        Some(move |event| {
+            match event {
+                stored::DatabaseQueryEvent::StartingQueryInitialization |
+                stored::DatabaseQueryEvent::StartingPartitionSelection |
+                stored::DatabaseQueryEvent::StartingPartitionQuery(_) |
+                stored::DatabaseQueryEvent::StartingResultSelection => {
+                    event_time = std::time::Instant::now();
+                },
+                stored::DatabaseQueryEvent::FinishedQueryInitialization => {
+                    println!(
+                        "initialized query in {} μs",
+                        event_time.elapsed().as_micros(),
+                    );
+                },
+                stored::DatabaseQueryEvent::FinishedPartitionSelection => {
+                    println!(
+                        "selected partitions in {} μs",
+                        event_time.elapsed().as_micros(),
+                    );
+                },
+                stored::DatabaseQueryEvent::FinishedPartitionQuery(i) => {
+                    println!(
+                        "queried partition {} in {} μs",
+                        i,
+                        event_time.elapsed().as_micros(),
+                    );
+                },
+                stored::DatabaseQueryEvent::FinishedResultSelection => {
+                    println!(
+                        "selected results in {} μs",
+                        event_time.elapsed().as_micros(),
+                    );
+                },
+            }
+        })
+    )?;
+    println!("queried k-NN in {} μs", time.elapsed().as_micros());
+    for (i, result) in results.iter().enumerate() {
+        let content_id = db.get_attribute(&result.vector_id, "content_id");
+        println!(
+            "result[{}]:\ncontent ID: {:?}\napprox. distance: {}",
+            i,
+            content_id,
+            result.squared_distance,
+        );
+    }
     Ok(())
 }
