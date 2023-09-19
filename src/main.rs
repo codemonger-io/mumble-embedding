@@ -9,10 +9,12 @@ use url::Url;
 use flechasdb::db::{DatabaseBuilder, DatabaseBuilderEvent, DatabaseQueryEvent};
 use flechasdb::db::proto::serialize_database;
 use flechasdb::db::stored;
-use flechasdb::db::stored::{DatabaseStore, LoadDatabase};
-use flechasdb::io::LocalFileSystem;
+use flechasdb::db::stored::{Database, DatabaseStore, LoadDatabase};
+use flechasdb::io::{FileSystem, LocalFileSystem};
+use flechasdb::slice::AsSlice;
 use flechasdb::vector::BlockVectorSet;
 
+use mumble_embedding::fs::S3FileSystem;
 use mumble_embedding::openai::{EmbeddingRequestBody, create_embeddings};
 use mumble_embedding::posts::{
     Embedding,
@@ -41,9 +43,14 @@ enum Commands {
         /// Input directory where embedding results are to be loaded from.
         in_dir: String,
         /// Output directory where the vector database are saved.
+        ///
+        /// It is treated as a key in the S3 bucket if `--s3` optiion is given.
         out_dir: String,
         /// Test query.
         test_query: Option<String>,
+        /// Whether to save the database in the S3 bucket.
+        #[arg(long)]
+        s3: bool,
     },
     /// Queries a vector database.
     Query {
@@ -51,6 +58,9 @@ enum Commands {
         db_path: String,
         /// Query.
         query_text: String,
+        /// Whether to load the database from the S3 bucket.
+        #[arg(long)]
+        s3: bool,
     },
 }
 
@@ -61,11 +71,11 @@ async fn main() -> Result<(), Error> {
         Commands::Create { username, out_dir } => {
             create(username, out_dir).await?;
         },
-        Commands::Build { in_dir, out_dir, test_query } => {
-            build(in_dir, out_dir, test_query).await?;
+        Commands::Build { in_dir, out_dir, test_query, s3 } => {
+            build(in_dir, out_dir, test_query, s3).await?;
         },
-        Commands::Query { db_path, query_text } => {
-            query(db_path, query_text).await?;
+        Commands::Query { db_path, query_text, s3 } => {
+            query(db_path, query_text, s3).await?;
         },
     }
     Ok(())
@@ -121,6 +131,7 @@ async fn build(
     in_dir: String,
     out_dir: String,
     test_query: Option<String>,
+    s3: bool,
 ) -> Result<(), Error> {
     const RESERVED_VECTORS: usize = 1000;
     const VECTOR_SIZE: usize = 1536; // OpenAI embedding vector
@@ -157,25 +168,25 @@ async fn build(
                 },
                 DatabaseBuilderEvent::FinishedIdAssignment => {
                     println!(
-                        "assigned vector IDs in {} μs",
+                        "- assigned vector IDs in {} μs",
                         event_time.elapsed().as_micros(),
                     );
                 },
                 DatabaseBuilderEvent::FinishedPartitioning => {
                     println!(
-                        "partitioned data in {} μs",
+                        "- partitioned data in {} μs",
                         event_time.elapsed().as_micros(),
                     );
                 },
                 DatabaseBuilderEvent::FinishedSubvectorDivision => {
                     println!(
-                        "divided data in {} μs",
+                        "- divided data in {} μs",
                         event_time.elapsed().as_micros(),
                     );
                 },
                 DatabaseBuilderEvent::FinishedQuantization(i) => {
                     println!(
-                        "quantized division {} in {} μs",
+                        "- quantized division {} in {} μs",
                         i,
                         event_time.elapsed().as_micros(),
                     );
@@ -187,10 +198,6 @@ async fn build(
     for (i, embedding) in embeddings.iter().enumerate() {
         db.set_attribute_at(i, ("content_id", embedding.id.clone()))?;
     }
-
-    println!("saving database to {}", out_dir);
-    let mut fs = LocalFileSystem::new(&out_dir);
-    serialize_database(&db, &mut fs)?;
 
     // makes a test query if one is given
     if let Some(test_query) = test_query {
@@ -224,20 +231,20 @@ async fn build(
                     },
                     DatabaseQueryEvent::FinishedPartitionSelection => {
                         println!(
-                            "selected partitions in {} μs",
+                            "- selected partitions in {} μs",
                             event_time.elapsed().as_micros(),
                         );
                     },
                     DatabaseQueryEvent::FinishedPartitionQuery(i) => {
                         println!(
-                            "queried partition {} in {} μs",
+                            "- queried partition {} in {} μs",
                             i,
                             event_time.elapsed().as_micros(),
                         );
                     },
                     DatabaseQueryEvent::FinishedResultSelection => {
                         println!(
-                            "selected results in {} μs",
+                            "- selected results in {} μs",
                             event_time.elapsed().as_micros(),
                         );
                     },
@@ -255,21 +262,41 @@ async fn build(
         }
     }
 
+    let time = std::time::Instant::now();
+    if s3 {
+        let bucket_name = env::var("DATABASE_BUCKET_NAME")
+            .expect("no DATABASE_BUCKET_NAME set");
+        println!("saving database to S3: {}/{}", bucket_name, out_dir);
+        // needs to spawn a new thread to block on S3 operations
+        let handle = tokio::runtime::Handle::try_current()
+            .expect("must be within Tokio runtime context");
+        let join_handle = std::thread::spawn(move || {
+            let aws_config = handle.block_on(aws_config::load_from_env());
+            let mut fs = S3FileSystem::new(
+                handle,
+                aws_config,
+                bucket_name,
+                &out_dir,
+            );
+            serialize_database(&db, &mut fs)
+                .expect("failed to serialize database");
+        });
+        join_handle.join().expect("failed to join serializer thread");
+    } else {
+        println!("saving database to {}", out_dir);
+        let mut fs = LocalFileSystem::new(&out_dir);
+        serialize_database(&db, &mut fs)?;
+    }
+    println!("saved database in {} μs", time.elapsed().as_micros());
+
     Ok(())
 }
 
-async fn query(db_path: String, query_text: String) -> Result<(), Error> {
-    const K: usize = 10; // k-nearest neighbors
-    const NPROBE: usize = 1;
-    // loads the database
-    println!("loading database from {}", db_path);
-    let db_path = Path::new(&db_path);
-    let time = std::time::Instant::now();
-    let db = DatabaseStore::<f32, _>::load_database(
-        LocalFileSystem::new(db_path.parent().unwrap()),
-        db_path.file_name().unwrap(),
-    )?;
-    println!("loaded database in {} μs", time.elapsed().as_micros());
+async fn query(
+    db_path: String,
+    query_text: String,
+    s3: bool,
+) -> Result<(), Error> {
     println!("creating embedding for the query");
     let openai_api_key = env::var("OPENAI_API_KEY")
         .context("no OPENAI_API_KEY set")?;
@@ -285,11 +312,69 @@ async fn query(db_path: String, query_text: String) -> Result<(), Error> {
         .iter()
         .map(|x| *x as f32)
         .collect();
+    if s3 {
+        let bucket_name = env::var("DATABASE_BUCKET_NAME")
+            .expect("no DATABASE_BUCKET_NAME set");
+        println!(
+            "loading database from S3 bucket: {}/{}",
+            bucket_name,
+            db_path,
+        );
+        let path_segments: Vec<&str> = db_path.split('/').collect();
+        let base_path = path_segments[0..path_segments.len() - 1].join("/");
+        let db_name = path_segments[path_segments.len() - 1].to_string();
+        // needs to spawn a new thread to block on S3 operations
+        let handle = tokio::runtime::Handle::try_current()
+            .expect("must be within Tokio runtime context");
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let join_handle = std::thread::spawn(move || {
+            let time = std::time::Instant::now();
+            let aws_config = handle.block_on(aws_config::load_from_env());
+            let fs = S3FileSystem::new(
+                handle.clone(),
+                aws_config,
+                bucket_name,
+                base_path,
+            );
+            let db = DatabaseStore::<f32, _>::load_database(fs, db_name)
+                .expect("failed to load database");
+            println!("loaded database in {} μs", time.elapsed().as_micros());
+            let res = do_query(&db, &query_vector[..]);
+            tx.send(res)
+                .or(Err(anyhow::anyhow!("failed to return database")))
+                .unwrap();
+        });
+        let result = rx.await?;
+        join_handle.join().expect("failed to join serializer thread");
+        result
+    } else {
+        println!("loading database from {}", db_path);
+        let time = std::time::Instant::now();
+        let db_path = Path::new(&db_path);
+        let db = DatabaseStore::<f32, _>::load_database(
+            LocalFileSystem::new(db_path.parent().unwrap()),
+            db_path.file_name().unwrap().to_str().unwrap(),
+        )?;
+        println!("loaded database in {} μs", time.elapsed().as_micros());
+        do_query(&db, &query_vector[..])
+    }
+}
+
+fn do_query<FS, V>(
+    db: &Database<f32, FS>,
+    query_vector: V,
+) -> Result<(), Error>
+where
+    FS: FileSystem,
+    V: AsSlice<f32>,
+{
+    const K: usize = 10; // k-nearest neighbors
+    const NPROBE: usize = 1;
     // queries k-NN
     let time = std::time::Instant::now();
     let mut event_time = std::time::Instant::now();
     let results = db.query(
-        &query_vector,
+        query_vector.as_slice(),
         K.try_into().unwrap(),
         NPROBE.try_into().unwrap(),
         Some(move |event| {
@@ -302,26 +387,26 @@ async fn query(db_path: String, query_text: String) -> Result<(), Error> {
                 },
                 stored::DatabaseQueryEvent::FinishedQueryInitialization => {
                     println!(
-                        "initialized query in {} μs",
+                        "- initialized query in {} μs",
                         event_time.elapsed().as_micros(),
                     );
                 },
                 stored::DatabaseQueryEvent::FinishedPartitionSelection => {
                     println!(
-                        "selected partitions in {} μs",
+                        "- selected partitions in {} μs",
                         event_time.elapsed().as_micros(),
                     );
                 },
                 stored::DatabaseQueryEvent::FinishedPartitionQuery(i) => {
                     println!(
-                        "queried partition {} in {} μs",
+                        "- queried partition {} in {} μs",
                         i,
                         event_time.elapsed().as_micros(),
                     );
                 },
                 stored::DatabaseQueryEvent::FinishedResultSelection => {
                     println!(
-                        "selected results in {} μs",
+                        "- selected results in {} μs",
                         event_time.elapsed().as_micros(),
                     );
                 },
@@ -329,6 +414,7 @@ async fn query(db_path: String, query_text: String) -> Result<(), Error> {
         })
     )?;
     println!("queried k-NN in {} μs", time.elapsed().as_micros());
+    let time = std::time::Instant::now();
     for (i, result) in results.iter().enumerate() {
         let content_id = db.get_attribute(&result.vector_id, "content_id");
         println!(
@@ -338,5 +424,6 @@ async fn query(db_path: String, query_text: String) -> Result<(), Error> {
             result.squared_distance,
         );
     }
+    println!("printed results in {} μs", time.elapsed().as_micros());
     Ok(())
 }
