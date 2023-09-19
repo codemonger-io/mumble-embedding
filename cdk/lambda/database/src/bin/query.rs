@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use std::env;
 use tracing::{Level, event};
 
+use flechasdb::db::AttributeValue;
 use flechasdb::db::stored;
 use flechasdb::db::stored::{Database, DatabaseStore, LoadDatabase};
-use flechasdb::db::types::AttributeValue;
 use flechasdb::io::FileSystem;
 use flechasdb::slice::AsSlice;
 
