@@ -6,19 +6,14 @@ use std::path::Path;
 use tokio_stream::StreamExt;
 use url::Url;
 
-use flechasdb::db::build::{
-    DatabaseBuilder,
-    DatabaseBuilderEvent,
-    DatabaseQueryEvent,
-};
+use flechasdb::db::build::DatabaseBuilder;
 use flechasdb::db::build::proto::serialize_database;
-use flechasdb::db::stored;
-use flechasdb::db::stored::{Database, DatabaseStore, LoadDatabase};
+use flechasdb::db::stored::{Database, LoadDatabase};
 use flechasdb::io::{FileSystem, LocalFileSystem};
 use flechasdb::slice::AsSlice;
 use flechasdb::vector::BlockVectorSet;
+use flechasdb_s3::syncfs::S3FileSystem;
 
-use mumble_embedding::fs::S3FileSystem;
 use mumble_embedding::openai::{EmbeddingRequestBody, create_embeddings};
 use mumble_embedding::posts::{
     Embedding,
@@ -157,46 +152,13 @@ async fn build(
     }
     let vs = BlockVectorSet::chunk(data, VECTOR_SIZE.try_into()?)?;
     let time = std::time::Instant::now();
-    let mut event_time = std::time::Instant::now();
     let mut db = DatabaseBuilder::new(vs)
         .with_partitions(NUM_PARTITIONS.try_into().unwrap())
         .with_divisions(NUM_DIVISIONS.try_into().unwrap())
         .with_clusters(NUM_CODES.try_into().unwrap())
-        .build(Some(move |event| {
-            match event {
-                DatabaseBuilderEvent::StartingIdAssignment |
-                DatabaseBuilderEvent::StartingPartitioning |
-                DatabaseBuilderEvent::StartingSubvectorDivision |
-                DatabaseBuilderEvent::StartingQuantization(_) => {
-                    event_time = std::time::Instant::now();
-                },
-                DatabaseBuilderEvent::FinishedIdAssignment => {
-                    println!(
-                        "- assigned vector IDs in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                DatabaseBuilderEvent::FinishedPartitioning => {
-                    println!(
-                        "- partitioned data in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                DatabaseBuilderEvent::FinishedSubvectorDivision => {
-                    println!(
-                        "- divided data in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                DatabaseBuilderEvent::FinishedQuantization(i) => {
-                    println!(
-                        "- quantized division {} in {} μs",
-                        i,
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-            };
-        }))?;
+        .build_with_events(|event| {
+            println!("{:?} at {} s", event, time.elapsed().as_secs_f64());
+        })?;
     println!("built database in {} μs", time.elapsed().as_micros());
     // assigns content IDs to vectors
     for (i, embedding) in embeddings.iter().enumerate() {
@@ -221,39 +183,13 @@ async fn build(
             .iter()
             .map(|x| *x as f32)
             .collect();
-        let mut event_time = std::time::Instant::now();
-        let results = db.query(
+        let results = db.query_with_events(
             &query_vector,
             K.try_into()?,
             NPROBE.try_into()?,
-            Some(move |event| {
-                match event {
-                    DatabaseQueryEvent::StartingPartitionSelection |
-                    DatabaseQueryEvent::StartingPartitionQuery(_) |
-                    DatabaseQueryEvent::StartingResultSelection => {
-                        event_time = std::time::Instant::now();
-                    },
-                    DatabaseQueryEvent::FinishedPartitionSelection => {
-                        println!(
-                            "- selected partitions in {} μs",
-                            event_time.elapsed().as_micros(),
-                        );
-                    },
-                    DatabaseQueryEvent::FinishedPartitionQuery(i) => {
-                        println!(
-                            "- queried partition {} in {} μs",
-                            i,
-                            event_time.elapsed().as_micros(),
-                        );
-                    },
-                    DatabaseQueryEvent::FinishedResultSelection => {
-                        println!(
-                            "- selected results in {} μs",
-                            event_time.elapsed().as_micros(),
-                        );
-                    },
-                }
-            }),
+            |event| {
+                println!("{:?} at {} s", event, time.elapsed().as_secs_f64());
+            },
         )?;
         println!("testing query: {}", test_query);
         for (i, result) in results.iter().enumerate() {
@@ -278,7 +214,7 @@ async fn build(
             let aws_config = handle.block_on(aws_config::load_from_env());
             let mut fs = S3FileSystem::new(
                 handle,
-                aws_config,
+                &aws_config,
                 bucket_name,
                 &out_dir,
             );
@@ -336,11 +272,11 @@ async fn query(
             let aws_config = handle.block_on(aws_config::load_from_env());
             let fs = S3FileSystem::new(
                 handle.clone(),
-                aws_config,
+                &aws_config,
                 bucket_name,
                 base_path,
             );
-            let db = DatabaseStore::<f32, _>::load_database(fs, db_name)
+            let db = Database::<f32, _>::load_database(fs, db_name)
                 .expect("failed to load database");
             println!("loaded database in {} μs", time.elapsed().as_micros());
             let res = do_query(&db, &query_vector[..]);
@@ -355,7 +291,7 @@ async fn query(
         println!("loading database from {}", db_path);
         let time = std::time::Instant::now();
         let db_path = Path::new(&db_path);
-        let db = DatabaseStore::<f32, _>::load_database(
+        let db = Database::<f32, _>::load_database(
             LocalFileSystem::new(db_path.parent().unwrap()),
             db_path.file_name().unwrap().to_str().unwrap(),
         )?;
@@ -376,46 +312,13 @@ where
     const NPROBE: usize = 1;
     // queries k-NN
     let time = std::time::Instant::now();
-    let mut event_time = std::time::Instant::now();
-    let results = db.query(
+    let results = db.query_with_events(
         query_vector.as_slice(),
         K.try_into().unwrap(),
         NPROBE.try_into().unwrap(),
-        Some(move |event| {
-            match event {
-                stored::DatabaseQueryEvent::StartingQueryInitialization |
-                stored::DatabaseQueryEvent::StartingPartitionSelection |
-                stored::DatabaseQueryEvent::StartingPartitionQuery(_) |
-                stored::DatabaseQueryEvent::StartingResultSelection => {
-                    event_time = std::time::Instant::now();
-                },
-                stored::DatabaseQueryEvent::FinishedQueryInitialization => {
-                    println!(
-                        "- initialized query in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                stored::DatabaseQueryEvent::FinishedPartitionSelection => {
-                    println!(
-                        "- selected partitions in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                stored::DatabaseQueryEvent::FinishedPartitionQuery(i) => {
-                    println!(
-                        "- queried partition {} in {} μs",
-                        i,
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                stored::DatabaseQueryEvent::FinishedResultSelection => {
-                    println!(
-                        "- selected results in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-            }
-        })
+        |event| {
+            println!("{:?} at {} s", event, time.elapsed().as_secs_f64());
+        },
     )?;
     println!("queried k-NN in {} μs", time.elapsed().as_micros());
     let time = std::time::Instant::now();
