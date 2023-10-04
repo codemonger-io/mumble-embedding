@@ -18,7 +18,9 @@ edition = "2021"
 anyhow = "1.0"
 aws-config = "0.56"
 aws-sdk-s3 = "0.30"
-flechasdb = { version = "0.0.1", path = "../../../../flechasdb" }
+flechasdb = { git = "https://github.com/codemonger-io/flechasdb.git", tag = "v0.1.0" }
+flechasdb-s3 = { git = "https://github.com/codemonger-io/flechasdb-s3.git", tag = "v0.1.0" }
+futures = { version = "0.3", default-features = false, features = ["alloc", "std"] }
 lambda_runtime = "0.8"
 mumble-embedding = { version = "0.1", path = "../../../lib" }
 serde = { version = "1.0", features = ["derive"] }
