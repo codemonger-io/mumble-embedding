@@ -7,20 +7,17 @@
 //! - `OPENAI_API_KEY`: API key for OpenAI.
 
 use anyhow::Context;
-use core::cell::Ref;
 use lambda_runtime::{Error, LambdaEvent, service_fn};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::env;
 use tracing::{Level, event};
 
+use flechasdb::asyncdb::stored::{Database, LoadDatabase};
 use flechasdb::db::AttributeValue;
-use flechasdb::db::stored;
-use flechasdb::db::stored::{Database, DatabaseStore, LoadDatabase};
-use flechasdb::io::FileSystem;
 use flechasdb::slice::AsSlice;
+use flechasdb_s3::asyncfs::S3FileSystem;
 
-use mumble_embedding::fs::S3FileSystem;
 use mumble_embedding::openai::{EmbeddingRequestBody, create_embeddings};
 
 #[derive(Clone, Debug, Deserialize)]
@@ -29,12 +26,18 @@ struct Query {
 }
 
 async fn function_handler(event: LambdaEvent<Query>) -> Result<Value, Error> {
+    let time = std::time::Instant::now();
     let (query_text, _context) = event.into_parts();
     let bucket_name = env::var("DATABASE_BUCKET_NAME")
         .context("no DATABASE_BUCKET_NAME set")?;
     let db_key = env::var("DATABASE_KEY")
         .context("no DATABASE_KEY set")?;
     let results = query(bucket_name, db_key, query_text.text).await?;
+    event!(
+        Level::INFO,
+        "total elapsed {} μs",
+        time.elapsed().as_micros(),
+    );
     Ok(json!({ "results": results }))
 }
 
@@ -44,6 +47,7 @@ async fn query(
     query_text: String,
 ) -> Result<Vec<String>, Error> {
     event!(Level::INFO, "creating embedding for the query");
+    let time = std::time::Instant::now();
     let openai_api_key = env::var("OPENAI_API_KEY")
         .context("no OPENAI_API_KEY set")?;
     let query_embedding = create_embeddings(
@@ -60,6 +64,11 @@ async fn query(
         .collect();
     event!(
         Level::INFO,
+        "created embedding for the query in {} μs",
+        time.elapsed().as_micros(),
+    );
+    event!(
+        Level::INFO,
         "loading database from S3 bucket: {}/{}",
         bucket_name,
         db_key,
@@ -67,97 +76,61 @@ async fn query(
     let path_segments: Vec<&str> = db_key.split('/').collect();
     let base_path = path_segments[0..path_segments.len() - 1].join("/");
     let db_name = path_segments[path_segments.len() - 1].to_string();
-    // needs to spawn a new thread to block on S3 operations
-    let handle = tokio::runtime::Handle::try_current()
-        .expect("must be within Tokio runtime context");
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let join_handle = std::thread::spawn(move || {
-        let time = std::time::Instant::now();
-        let aws_config = handle.block_on(aws_config::load_from_env());
-        let fs = S3FileSystem::new(
-            handle.clone(),
-            aws_config,
-            bucket_name,
-            base_path,
-        );
-        let db = DatabaseStore::<f32, _>::load_database(fs, db_name)
-            .expect("failed to load database");
-        event!(
-            Level::INFO,
-            "loaded database in {} μs",
-            time.elapsed().as_micros(),
-        );
-        let res = do_query(&db, &query_vector[..]);
-        tx.send(res)
-            .or(Err(anyhow::anyhow!("failed to return database")))
-            .unwrap();
-    });
-    let result = rx.await?;
-    join_handle.join().expect("failed to join serializer thread");
-    result
+    let time = std::time::Instant::now();
+    let aws_config = aws_config::load_from_env().await;
+    let fs = S3FileSystem::new(
+        &aws_config,
+        bucket_name,
+        base_path,
+    );
+    let db = Database::<f32, _>::load_database(fs, db_name).await?;
+    event!(
+        Level::INFO,
+        "loaded database in {} μs",
+        time.elapsed().as_micros(),
+    );
+    do_query(&db, &query_vector[..]).await
 }
 
-fn do_query<FS, V>(
-    db: &Database<f32, FS>,
+async fn do_query<V>(
+    db: &Database<f32, S3FileSystem>,
     query_vector: V,
 ) -> Result<Vec<String>, Error>
 where
-    FS: FileSystem,
     V: AsSlice<f32>,
 {
     const K: usize = 10; // k-nearest neighbors
     const NPROBE: usize = 1;
     // queries k-NN
     let time = std::time::Instant::now();
-    let mut event_time = std::time::Instant::now();
-    let results = db.query(
+    let results = db.query_with_events(
         query_vector.as_slice(),
         K.try_into().unwrap(),
         NPROBE.try_into().unwrap(),
-        Some(move |event| {
-            match event {
-                stored::DatabaseQueryEvent::StartingQueryInitialization |
-                stored::DatabaseQueryEvent::StartingPartitionSelection |
-                stored::DatabaseQueryEvent::StartingPartitionQuery(_) |
-                stored::DatabaseQueryEvent::StartingResultSelection => {
-                    event_time = std::time::Instant::now();
-                },
-                stored::DatabaseQueryEvent::FinishedQueryInitialization => {
-                    event!(
-                        Level::INFO,
-                        "- initialized query in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                stored::DatabaseQueryEvent::FinishedPartitionSelection => {
-                    event!(
-                        Level::INFO,
-                        "- selected partitions in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                stored::DatabaseQueryEvent::FinishedPartitionQuery(i) => {
-                    event!(
-                        Level::INFO,
-                        "- queried partition {} in {} μs",
-                        i,
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-                stored::DatabaseQueryEvent::FinishedResultSelection => {
-                    event!(
-                        Level::INFO,
-                        "- selected results in {} μs",
-                        event_time.elapsed().as_micros(),
-                    );
-                },
-            }
-        })
-    )?;
+        |event| {
+            event!(
+                Level::INFO,
+                "{:?} at {} s",
+                event,
+                time.elapsed().as_secs_f64(),
+            );
+        },
+    ).await?;
     event!(Level::INFO, "queried k-NN in {} μs", time.elapsed().as_micros());
+
     let time = std::time::Instant::now();
-    for (i, result) in results.iter().enumerate() {
-        let content_id = db.get_attribute_of(result, "content_id");
+    let results: Result<_, Error> = futures::future::try_join_all(
+        results.into_iter().map(|result| async move {
+            let content_id = result.get_attribute("content_id").await
+                .context("failed to get 'content_id'")?;
+            Ok((result, content_id))
+        }),
+    ).await;
+    let results = results.map_err(|err| anyhow::anyhow!(
+        "failed to get 'content_id': {}",
+        err,
+    ))?;
+    for (i, (result, content_id)) in results.iter().enumerate() {
         event!(
             Level::INFO,
             "result[{}]:\ncontent ID: {:?}\napprox. distance: {}",
@@ -167,20 +140,24 @@ where
         );
     }
     event!(Level::INFO, "printed results in {} μs", time.elapsed().as_micros());
+
     Ok(
         results
-            .iter()
-            .map(|r| db
-                .get_attribute_of(r, "content_id")
-                .unwrap()
-                .map(|x| Ref::map(x, |x| match x {
-                    AttributeValue::String(s) => s,
-                }).clone())
-                .unwrap()
-            )
-            .collect(),
+            .into_iter()
+            .map(|(_, content_id)| {
+                content_id
+                    .map(|x| match x {
+                        AttributeValue::String(s) => Ok(s.clone()),
+                        AttributeValue::Uint64(_) => Err(anyhow::anyhow!(
+                            "content_id must be a string but got u64",
+                        )),
+                    })
+                    .unwrap()
+            })
+            .collect::<Result<Vec<_>, _>>()?,
     )
 }
+
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
