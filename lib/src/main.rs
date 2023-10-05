@@ -6,6 +6,7 @@ use std::path::Path;
 use tokio_stream::StreamExt;
 use url::Url;
 
+use flechasdb::db::AttributeValue;
 use flechasdb::db::build::DatabaseBuilder;
 use flechasdb::db::build::proto::serialize_database;
 use flechasdb::db::stored::{Database, LoadDatabase};
@@ -60,6 +61,10 @@ enum Commands {
         /// Whether to load the database from the S3 bucket.
         #[arg(long)]
         s3: bool,
+        /// Directory where embedding results are stored.
+        /// Resolves the ID to the contents if this is given.
+        #[arg(long)]
+        embedding_dir: Option<String>,
     },
 }
 
@@ -73,8 +78,8 @@ async fn main() -> Result<(), Error> {
         Commands::Build { in_dir, out_dir, test_query, s3 } => {
             build(in_dir, out_dir, test_query, s3).await?;
         },
-        Commands::Query { db_path, query_text, s3 } => {
-            query(db_path, query_text, s3).await?;
+        Commands::Query { db_path, query_text, s3, embedding_dir } => {
+            query(db_path, query_text, s3, embedding_dir).await?;
         },
     }
     Ok(())
@@ -236,6 +241,7 @@ async fn query(
     db_path: String,
     query_text: String,
     s3: bool,
+    embedding_dir: Option<String>,
 ) -> Result<(), Error> {
     println!("creating embedding for the query");
     let openai_api_key = env::var("OPENAI_API_KEY")
@@ -252,7 +258,7 @@ async fn query(
         .iter()
         .map(|x| *x as f32)
         .collect();
-    if s3 {
+    let content_ids = if s3 {
         let bucket_name = env::var("DATABASE_BUCKET_NAME")
             .expect("no DATABASE_BUCKET_NAME set");
         println!(
@@ -297,13 +303,24 @@ async fn query(
         )?;
         println!("loaded database in {} μs", time.elapsed().as_micros());
         do_query(&db, &query_vector[..])
+    }?;
+    if let Some(embedding_dir) = embedding_dir {
+        for (i, id) in content_ids.iter().enumerate() {
+            let unique_part = get_unique_part(id)?;
+            let embedding_path = Path::new(&embedding_dir)
+                .join(format!("{}.json", &unique_part));
+            let file = File::open(embedding_path)?;
+            let embedding: Embedding = serde_json::from_reader(file)?;
+            println!("[{}]: {}", i, embedding.content);
+        }
     }
+    Ok(())
 }
 
 fn do_query<FS, V>(
     db: &Database<f32, FS>,
     query_vector: V,
-) -> Result<(), Error>
+) -> Result<Vec<String>, Error>
 where
     FS: FileSystem,
     V: AsSlice<f32>,
@@ -322,15 +339,32 @@ where
     )?;
     println!("queried k-NN in {} μs", time.elapsed().as_micros());
     let time = std::time::Instant::now();
-    for (i, result) in results.iter().enumerate() {
-        let content_id = db.get_attribute(&result.vector_id, "content_id");
-        println!(
-            "result[{}]:\ncontent ID: {:?}\napprox. distance: {}",
-            i,
-            content_id,
-            result.squared_distance,
-        );
+    let content_ids = results.into_iter()
+        .map(|result| {
+            result
+                .get_attribute("content_id")
+                .map_err(|e| anyhow!("failed to get attribute: {}", e))
+                .and_then(|value| value
+                    .map(|value| match &*value {
+                        AttributeValue::String(s) => Ok(s.clone()),
+                        _ => Err(anyhow!("content_id must be a string")),
+                    })
+                    .unwrap_or(Err(anyhow!("no content_id"))),
+                )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    println!("obtained attributes in {} μs", time.elapsed().as_micros());
+    for (i, id) in content_ids.iter().enumerate() {
+        println!("result[{}]:\ncontent ID: {}", i, id);
     }
-    println!("printed results in {} μs", time.elapsed().as_micros());
-    Ok(())
+    Ok(content_ids)
+}
+
+// Returns the unique part of a given ID.
+fn get_unique_part<'a>(id: &str) -> Result<String, Error> {
+    let url = Url::parse(id)?;
+    url.path_segments()
+        .and_then(|segments| segments.last())
+        .map(|part| part.to_string())
+        .ok_or(anyhow!("no unique part in ID"))
 }
