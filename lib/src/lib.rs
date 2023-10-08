@@ -1,4 +1,5 @@
 pub mod error;
+pub mod markdown;
 pub mod openai;
 pub mod posts;
 pub mod s3;
