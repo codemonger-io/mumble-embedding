@@ -4,6 +4,7 @@
 #[derive(Debug)]
 pub enum Error {
     InvalidData(String),
+    InvalidContext(String),
     HttpError(reqwest::StatusCode),
     SerdeJsonError(serde_json::Error),
     ReqwestError(reqwest::Error),
@@ -16,6 +17,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::InvalidData(s) => write!(f, "Invalid data: {}", s),
+            Error::InvalidContext(s) => write!(f, "Invalid context: {}", s),
             Error::HttpError(s) => write!(f, "HTTP error: {}", s),
             Error::SerdeJsonError(e) => write!(f, "serde_json::Error: {}", e),
             Error::ReqwestError(e) => write!(f, "reqwest::Error: {}", e),
