@@ -1,7 +1,7 @@
 //! Dealing with posts (mumblings).
 
+use futures::stream::{Stream, StreamExt};
 use serde::{Deserialize, Serialize};
-use tokio_stream::{Stream, StreamExt};
 
 use crate::error::Error;
 use crate::openai::{EmbeddingRequestBody, create_embeddings};

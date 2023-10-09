@@ -3,7 +3,7 @@
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use tokio_stream::Stream;
+use futures::Stream;
 
 /// Asynchronous extensions for `Stream`.
 pub trait StreamAsyncExt: Stream {

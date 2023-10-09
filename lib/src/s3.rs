@@ -9,7 +9,7 @@ use aws_smithy_runtime_api::client::orchestrator::HttpResponse;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use tokio_stream::Stream;
+use futures::stream::Stream;
 
 type ListObjectsV2FutureOutput = Result<
     ListObjectsV2Output,

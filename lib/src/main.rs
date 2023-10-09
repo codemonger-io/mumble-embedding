@@ -1,9 +1,9 @@
 use anyhow::{Context, Error, anyhow, bail};
 use clap::{Parser, Subcommand};
+use futures::stream::StreamExt;
 use std::env;
 use std::fs::{File, create_dir_all, read_dir};
 use std::path::Path;
-use tokio_stream::StreamExt;
 use url::Url;
 
 use flechasdb::db::AttributeValue;
@@ -98,7 +98,7 @@ async fn create(username: String, out_dir: String) -> Result<(), Error> {
     println!("pulling mumblings of {}", username);
     let posts = list_posts(&objects_bucket_name, &username).await;
     let mut embeddings = posts
-        .chunks_timeout(10, core::time::Duration::from_secs(10))
+        .chunks(10)
         .then(|p| async {
             if let Ok(p) = p.into_iter().collect::<Result<_, _>>() {
                 create_embeddings_for_posts(p, openai_api_key.clone()).await
