@@ -114,9 +114,9 @@ fn pass_token_string(
 }
 
 struct Transducer {
-    num_chars: usize,
     // `state` internally becomes `None` while it is transitioning.
     state: Option<TransducerState>,
+    char_index: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -152,14 +152,14 @@ enum TransducerState {
 impl Transducer {
     fn new_from(state: TransducerState, start: usize) -> Self {
         Self {
-            num_chars: start,
             state: Some(state),
+            char_index: start,
         }
     }
 
     fn next(&mut self, ch: char) -> Vec<Token> {
         let (next_state, output) = self.state.take().unwrap().next(self, ch);
-        self.num_chars += 1;
+        self.char_index += 1;
         self.state.replace(next_state);
         output
     }
@@ -167,7 +167,7 @@ impl Transducer {
     fn next_string(&mut self, text: &String) -> Vec<Token> {
         let (next_state, output) =
             self.state.take().unwrap().next_string(self, text);
-        self.num_chars += text.len();
+        self.char_index += text.len();
         self.state.replace(next_state);
         output
     }
@@ -180,7 +180,7 @@ impl Transducer {
 }
 
 impl TransducerState {
-    fn next(self, transducer: &mut Transducer, ch: char) -> (Self, Vec<Token>) {
+    fn next(self, transducer: &Transducer, ch: char) -> (Self, Vec<Token>) {
         match self {
             Self::Initial => Self::initial_next(transducer, ch),
             Self::Character => Self::character_next(transducer, ch),
@@ -200,7 +200,7 @@ impl TransducerState {
 
     fn next_string(
         self,
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         text: &String,
     ) -> (Self, Vec<Token>) {
         match self {
@@ -220,7 +220,7 @@ impl TransducerState {
         }
     }
 
-    fn finish(self, transducer: &mut Transducer) -> (Self, Vec<Token>) {
+    fn finish(self, transducer: &Transducer) -> (Self, Vec<Token>) {
         match self {
             Self::Initial => Self::initial_finish(),
             Self::Character => Self::character_finish(),
@@ -233,7 +233,7 @@ impl TransducerState {
     }
 
     fn initial_next(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         ch: char,
     ) -> (Self, Vec<Token>) {
         match ch {
@@ -247,8 +247,8 @@ impl TransducerState {
                     vec![(
                         TokenType::Character(ch),
                         Range {
-                            start: transducer.num_chars,
-                            end: transducer.num_chars + 1,
+                            start: transducer.char_index,
+                            end: transducer.char_index + 1,
                         }
                     )],
                 )
@@ -257,7 +257,7 @@ impl TransducerState {
     }
 
     fn initial_next_string(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         text: &String,
     ) -> (Self, Vec<Token>) {
         (
@@ -265,8 +265,8 @@ impl TransducerState {
             vec![(
                 TokenType::String(text.clone()),
                 Range {
-                    start: transducer.num_chars,
-                    end: transducer.num_chars + text.chars().count(),
+                    start: transducer.char_index,
+                    end: transducer.char_index + text.chars().count(),
                 },
             )],
         )
@@ -277,18 +277,18 @@ impl TransducerState {
     }
 
     fn character_next(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         ch: char,
     ) -> (Self, Vec<Token>) {
         match ch {
             ch if ch.is_ascii_whitespace() => {
                 // deters the output and squashes consecutive whitespaces
-                (Self::Whitespace(transducer.num_chars), Vec::new())
+                (Self::Whitespace(transducer.char_index), Vec::new())
             },
             '.' => {
                 // deters the output
                 // and determines if this is the end of the sentence
-                (Self::PeriodAnd(transducer.num_chars), Vec::new())
+                (Self::PeriodAnd(transducer.char_index), Vec::new())
             },
             ch if ch.is_sentence_break() => {
                 // determines this is the end of the sentence
@@ -298,15 +298,15 @@ impl TransducerState {
                         (
                             TokenType::Character(ch),
                             Range {
-                                start: transducer.num_chars,
-                                end: transducer.num_chars + 1,
+                                start: transducer.char_index,
+                                end: transducer.char_index + 1,
                             },
                         ),
                         (
                             TokenType::SentenceBreak,
                             Range {
-                                start: transducer.num_chars + 1,
-                                end: transducer.num_chars + 1,
+                                start: transducer.char_index + 1,
+                                end: transducer.char_index + 1,
                             },
                         ),
                     ],
@@ -318,8 +318,8 @@ impl TransducerState {
                     vec![(
                         TokenType::Character(ch),
                         Range {
-                            start: transducer.num_chars,
-                            end: transducer.num_chars + 1,
+                            start: transducer.char_index,
+                            end: transducer.char_index + 1,
                         },
                     )],
                 )
@@ -328,7 +328,7 @@ impl TransducerState {
     }
 
     fn character_next_string(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         text: &String,
     ) -> (Self, Vec<Token>) {
         (
@@ -336,8 +336,8 @@ impl TransducerState {
             vec![(
                 TokenType::String(text.clone()),
                 Range {
-                    start: transducer.num_chars,
-                    end: transducer.num_chars + text.chars().count(),
+                    start: transducer.char_index,
+                    end: transducer.char_index + text.chars().count(),
                 },
             )],
         )
@@ -348,7 +348,7 @@ impl TransducerState {
     }
 
     fn whitespace_next(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         start: usize,
         ch: char,
     ) -> (Self, Vec<Token>) {
@@ -361,7 +361,7 @@ impl TransducerState {
                 // deters the output
                 // and determines if this is the end of the sentence
                 (
-                    Self::WhitespacePeriodAnd(start, transducer.num_chars),
+                    Self::WhitespacePeriodAnd(start, transducer.char_index),
                     Vec::new(),
                 )
             },
@@ -375,14 +375,14 @@ impl TransducerState {
                             TokenType::Character(' '),
                             Range {
                                 start,
-                                end: transducer.num_chars,
+                                end: transducer.char_index,
                             },
                         ),
                         (
                             TokenType::Character(ch),
                             Range {
-                                start: transducer.num_chars,
-                                end: transducer.num_chars + 1,
+                                start: transducer.char_index,
+                                end: transducer.char_index + 1,
                             },
                         ),
                     ],
@@ -392,7 +392,7 @@ impl TransducerState {
     }
 
     fn whitespace_next_string(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         start: usize,
         text: &String,
     ) -> (Self, Vec<Token>) {
@@ -403,14 +403,14 @@ impl TransducerState {
                     TokenType::Character(' '),
                     Range {
                         start,
-                        end: transducer.num_chars,
+                        end: transducer.char_index,
                     },
                 ),
                 (
                     TokenType::String(text.clone()),
                     Range {
-                        start: transducer.num_chars,
-                        end: transducer.num_chars + text.chars().count(),
+                        start: transducer.char_index,
+                        end: transducer.char_index + text.chars().count(),
                     },
                 ),
             ],
@@ -427,14 +427,14 @@ impl TransducerState {
                 TokenType::Character(' '),
                 Range {
                     start,
-                    end: transducer.num_chars,
+                    end: transducer.char_index,
                 },
             )],
         )
     }
 
     fn period_and_next(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         start: usize,
         ch: char,
     ) -> (Self, Vec<Token>) {
@@ -477,8 +477,8 @@ impl TransducerState {
                         (
                             TokenType::Character(ch),
                             Range {
-                                start: transducer.num_chars,
-                                end: transducer.num_chars + 1,
+                                start: transducer.char_index,
+                                end: transducer.char_index + 1,
                             },
                         ),
                     ],
@@ -488,7 +488,7 @@ impl TransducerState {
     }
 
     fn period_and_next_string(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         start: usize,
         text: &String,
     ) -> (Self, Vec<Token>) {
@@ -506,8 +506,8 @@ impl TransducerState {
                 (
                     TokenType::String(text.clone()),
                     Range {
-                        start: transducer.num_chars,
-                        end: transducer.num_chars + text.chars().count(),
+                        start: transducer.char_index,
+                        end: transducer.char_index + text.chars().count(),
                     },
                 ),
             ],
@@ -537,7 +537,7 @@ impl TransducerState {
     }
 
     fn whitespace_period_and_next(
-        transducer: &mut Transducer,
+        transducer: &Transducer,
         w_start: usize,
         p_start: usize,
         ch: char,
@@ -590,8 +590,8 @@ impl TransducerState {
                         (
                             TokenType::Character(ch),
                             Range {
-                                start: transducer.num_chars,
-                                end: transducer.num_chars + 1,
+                                start: transducer.char_index,
+                                end: transducer.char_index + 1,
                             },
                         ),
                     ],
@@ -628,8 +628,8 @@ impl TransducerState {
                 (
                     TokenType::String(text.clone()),
                     Range {
-                        start: transducer.num_chars,
-                        end: transducer.num_chars + text.chars().count(),
+                        start: transducer.char_index,
+                        end: transducer.char_index + text.chars().count(),
                     },
                 ),
             ],
