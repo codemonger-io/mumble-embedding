@@ -379,8 +379,12 @@ where
 // Returns the unique part of a given ID.
 fn get_unique_part<'a>(id: &str) -> Result<String, Error> {
     let url = Url::parse(id)?;
-    url.path_segments()
+    let part = url.path_segments()
         .and_then(|segments| segments.last())
         .map(|part| part.to_string())
-        .ok_or(anyhow!("no unique part in ID"))
+        .ok_or(anyhow!("no unique part in ID"))?;
+    let fragment = url.fragment()
+        .map(|fragment| format!("#{}", fragment))
+        .unwrap_or("".to_string());
+    Ok(format!("{}{}", part, fragment))
 }
