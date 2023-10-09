@@ -128,28 +128,26 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Self::Item>> {
-        if let Some(iterator) = self.iterator.as_mut() {
-            if let Some(item) = iterator.next() {
-                Poll::Ready(Some(Ok(item)))
+        loop {
+            if let Some(iterator) = self.iterator.as_mut() {
+                if let Some(item) = iterator.next() {
+                    return Poll::Ready(Some(Ok(item)))
+                } else {
+                    self.iterator = None;
+                }
             } else {
-                self.iterator = None;
-                cx.waker().wake_by_ref();
-                Poll::Pending
-            }
-        } else {
-            match Pin::new(&mut self.stream).poll_next(cx) {
-                Poll::Ready(Some(result)) => {
-                    match result {
-                        Ok(iterable) => {
-                            self.iterator = Some(iterable.into_iter());
-                            cx.waker().wake_by_ref();
-                            Poll::Pending
-                        },
-                        Err(err) => Poll::Ready(Some(Err(err))),
-                    }
-                },
-                Poll::Ready(None) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
+                match Pin::new(&mut self.stream).poll_next(cx) {
+                    Poll::Ready(Some(result)) => {
+                        match result {
+                            Ok(iterable) => {
+                                self.iterator = Some(iterable.into_iter());
+                            },
+                            Err(err) => return Poll::Ready(Some(Err(err))),
+                        }
+                    },
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => return Poll::Pending,
+                }
             }
         }
     }
