@@ -13,10 +13,10 @@ aws-smithy-runtime-api = "0.56"
 clap = { version = "4.4", features = ["derive"] }
 flechasdb = { git = "https://github.com/codemonger-io/flechasdb.git", tag = "v0.1.0" }
 flechasdb-s3 = { git = "https://github.com/codemonger-io/flechasdb-s3.git", tag = "v0.1.0" }
+futures = "0.3"
 pulldown-cmark = "0.9"
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.32", features = ["full"] }
-tokio-stream = { version = "0.1", features = ["time"] }
 url = "2.4"
