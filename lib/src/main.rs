@@ -18,8 +18,9 @@ use flechasdb_s3::syncfs::S3FileSystem;
 use mumble_embedding::openai::{EmbeddingRequestBody, create_embeddings};
 use mumble_embedding::posts::{
     Embedding,
-    create_embeddings_for_posts,
+    create_embeddings_for_sentences,
     list_posts,
+    split_post_into_sentences,
 };
 use mumble_embedding::streams::StreamAsyncExt;
 
@@ -98,10 +99,20 @@ async fn create(username: String, out_dir: String) -> Result<(), Error> {
     println!("pulling mumblings of {}", username);
     let posts = list_posts(&objects_bucket_name, &username).await;
     let mut embeddings = posts
+        .map(|post| {
+            if let Ok(post) = post {
+                Ok(split_post_into_sentences(post))
+            } else {
+                Err(mumble_embedding::error::Error::InvalidData(
+                    format!("failed to list posts"),
+                ))
+            }
+        })
+        .flatten_results()
         .chunks(10)
-        .then(|p| async {
-            if let Ok(p) = p.into_iter().collect::<Result<_, _>>() {
-                create_embeddings_for_posts(p, openai_api_key.clone()).await
+        .then(|s| async {
+            if let Ok(s) = s.into_iter().collect::<Result<_, _>>() {
+                create_embeddings_for_sentences(s, openai_api_key.clone()).await
             } else {
                 Err(mumble_embedding::error::Error::InvalidData(
                     format!("failed to create embeddings for a batch"),
@@ -118,7 +129,12 @@ async fn create(username: String, out_dir: String) -> Result<(), Error> {
                     .ok_or(anyhow!("invalid ID: {}", embedding.id))?
                     .last()
                     .ok_or(anyhow!("invalid ID: {}", embedding.id))?;
-                let path = Path::new(&out_dir).join(name).with_extension("json");
+                let fragment = parsed.fragment()
+                    .map_or("".to_string(), |f| format!("#{}", f));
+                let name = format!("{}{}", name, fragment);
+                let path = Path::new(&out_dir)
+                    .join(name)
+                    .with_extension("json");
                 println!("saving embedding to {:?}", path);
                 let out = File::create(path)?;
                 serde_json::to_writer(out, &embedding)?;
