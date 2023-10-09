@@ -25,18 +25,26 @@ fn extract_sentences_from_fragments(
     let senetences: Vec<(String, Range<usize>)> = fragments
         .iter()
         .flat_map(|fragment| segment_fragment(fragment))
-        .fold(Vec::with_capacity(10), |mut sentences, (segment, range)| {
-            match segment {
-                Segmentation::Text(text) => {
-                    if let Some((sentence, s_range)) = sentences.last_mut() {
-                        sentence.push_str(&text);
-                        s_range.end = range.end;
+        .fold(Vec::with_capacity(10), |mut sentences, (token, r)| {
+            match token {
+                TokenType::Character(ch) => {
+                    if let Some((sentence, range)) = sentences.last_mut() {
+                        sentence.push(ch);
+                        range.end = r.end;
                     } else {
-                        sentences.push((text, range));
+                        sentences.push((ch.to_string(), r));
                     }
                 },
-                _ => {
-                    sentences.push(("".to_string(), range));
+                TokenType::String(s) => {
+                    if let Some((sentence, range)) = sentences.last_mut() {
+                        sentence.push_str(&s);
+                        range.end = r.end;
+                    } else {
+                        sentences.push((s, r));
+                    }
+                },
+                TokenType::SentenceBreak => {
+                    sentences.push((String::with_capacity(256), r));
                 },
             };
             sentences
@@ -47,21 +55,13 @@ fn extract_sentences_from_fragments(
         .collect()
 }
 
-#[derive(Clone, Debug, PartialEq)]
-enum Segmentation {
-    Text(String),
-    SentenceBreak,
-}
-
-fn segment_fragment(
-    (content, range): &Fragment,
-) -> Vec<(Segmentation, Range<usize>)> {
+fn segment_fragment((content, range): &Fragment) -> Vec<Token> {
     match content {
         FragmentContent::Text(text) => segment_text(text, range),
         FragmentContent::Code(code) =>
-            vec![(Segmentation::Text(code.clone()), range.clone())],
+            vec![(TokenType::String(code.clone()), range.clone())],
         FragmentContent::Url(url) =>
-            vec![(Segmentation::Text(url.clone()), range.clone())],
+            vec![(TokenType::String(url.clone()), range.clone())],
     }
 }
 
@@ -69,52 +69,15 @@ fn segment_fragment(
 //
 // A sentence breaks at a period, question mark, exclamation mark,
 // semicolon, or 句点('。').
-fn segment_text(
-    text: &String,
-    range: &Range<usize>,
-) -> Vec<(Segmentation, Range<usize>)> {
+fn segment_text(text: &String, range: &Range<usize>) -> Vec<Token> {
     // labels each character
-    let mut transducer = Transducer::new();
+    let mut transducer = Transducer::new(range.start);
     let mut tokens: Vec<Token> = Vec::with_capacity(text.len());
     for ch in text.chars() {
         tokens.append(&mut transducer.next(ch));
     }
     tokens.append(&mut transducer.finish());
-    // groups characters into segments
     tokens
-        .into_iter()
-        .fold(Vec::with_capacity(10), |mut segments, (token, r)| {
-            match token {
-                TokenType::Character(ch) => {
-                    // appends to the last text segment if it is a text segment
-                    // otherwise, pushes a new text segment
-                    if let Some((Segmentation::Text(text), sub_range)) =
-                        segments.last_mut()
-                    {
-                        text.push(ch);
-                        sub_range.end = range.start + r.end;
-                    } else {
-                        segments.push((
-                            Segmentation::Text(ch.to_string()),
-                            Range {
-                                start: range.start + r.start,
-                                end: range.start + r.end,
-                            },
-                        ));
-                    }
-                },
-                TokenType::SentenceBreak => {
-                    segments.push((
-                        Segmentation::SentenceBreak,
-                        Range {
-                            start: range.start + r.start,
-                            end: range.start + r.end,
-                        },
-                    ));
-                },
-            };
-            segments
-        })
 }
 
 struct Transducer {
@@ -127,6 +90,8 @@ struct Transducer {
 enum TokenType {
     // Character.
     Character(char),
+    // String.
+    String(String),
     // Sentence break.
     SentenceBreak,
 }
@@ -152,9 +117,9 @@ enum TransducerState {
 }
 
 impl Transducer {
-    fn new() -> Self {
+    fn new(start: usize) -> Self {
         Self {
-            num_chars: 0,
+            num_chars: start,
             state: Some(TransducerState::Initial),
         }
     }
