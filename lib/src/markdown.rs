@@ -6,7 +6,7 @@ use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag};
 use crate::error::Error;
 
 /// Text block in a Markdown text.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum TextBlock {
     /// Text block.
     Text(Vec<Fragment>),
@@ -25,7 +25,7 @@ pub enum TextBlock {
 ///
 /// Fragment type will matter in further segmentation; e.g., no sentence is
 /// split in the middle of a code fragment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FragmentContent {
     /// Ordinary text.
     Text(String),
@@ -359,7 +359,7 @@ impl TextBlockExtractorState {
                 stack_again!();
                 Ok(())
             },
-            Event::Code(code) => {
+            Event::Code(code) | Event::Html(code) => {
                 fragments.push((
                     FragmentContent::Code(code.into_string()),
                     range,
@@ -571,5 +571,31 @@ impl TextBlockExtractorState {
             paragraph_type,
             fragments,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_text_blocks_can_extract_from_plain_text() {
+        let input = "simple text";
+        assert_eq!(extract_text_blocks(input).unwrap(), vec![
+            TextBlock::Text(vec![
+                (FragmentContent::Text("simple text".to_string()), 0..11),
+            ]),
+        ]);
+    }
+
+    #[test]
+    fn extract_text_blocks_can_extract_from_text_including_html_node() {
+        let input = "<unnamed> panicked at";
+        assert_eq!(extract_text_blocks(input).unwrap(), vec![
+            TextBlock::Text(vec![
+                (FragmentContent::Code("<unnamed>".to_string()), 0..9),
+                (FragmentContent::Text(" panicked at".to_string()), 9..21),
+            ]),
+        ]);
     }
 }
