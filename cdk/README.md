@@ -4,6 +4,22 @@ This is a blank project for CDK development with TypeScript.
 
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
 
+```sh
+export AWS_PROFILE=kikuo-jp
+```
+
+```sh
+pnpm exec cdk bootstrap
+```
+
+```sh
+pnpm exec cdk synth
+```
+
+```sh
+pnpm exec cdk deploy
+```
+
 ## Useful commands
 
 * `npm run build`   compile typescript to js
