@@ -45,11 +45,14 @@ enum Commands {
         in_dir: String,
         /// Output directory where the vector database are saved.
         ///
-        /// It is treated as a key in the S3 bucket if `--s3` optiion is given.
+        /// It is treated as a key in the S3 bucket if `--s3` option is given.
         out_dir: String,
         /// Test query.
         test_query: Option<String>,
         /// Whether to save the database in the S3 bucket.
+        ///
+        /// Configure DATABASE_BUCKET_NAME environment variable to use this
+        /// flag.
         #[arg(long)]
         s3: bool,
     },
@@ -60,6 +63,9 @@ enum Commands {
         /// Query.
         query_text: String,
         /// Whether to load the database from the S3 bucket.
+        ///
+        /// Configure DATABASE_BUCKET_NAME environment variable to use this
+        /// flag.
         #[arg(long)]
         s3: bool,
         /// Directory where embedding results are stored.
