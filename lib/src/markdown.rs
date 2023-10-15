@@ -182,6 +182,8 @@ enum TextBlockExtractorState {
 enum ParagraphType {
     // Paragraph.
     Paragraph,
+    // Heading,
+    Heading,
     // List item.
     Item,
 }
@@ -279,6 +281,14 @@ impl TextBlockExtractorState {
                 });
                 Ok(())
             },
+            Event::Start(Tag::Heading(_, _, _)) => {
+                extractor.state_stack.push(Self::Blank);
+                extractor.state_stack.push(Self::Paragraph {
+                    paragraph_type: ParagraphType::Heading,
+                    fragments: Vec::with_capacity(10),
+                });
+                Ok(())
+            },
             _ => Err(Error::InvalidContext(format!(
                 "Markdown content must start but got {:?}",
                 event,
@@ -312,6 +322,18 @@ impl TextBlockExtractorState {
                     },
                     _ => Err(Error::InvalidContext(format!(
                         "paragraph end is expected but got {:?}",
+                        event,
+                    ))),
+                }
+            },
+            Event::End(Tag::Heading(_, _, _)) => {
+                match paragraph_type {
+                    ParagraphType::Heading => {
+                        extractor.text_blocks.push(TextBlock::Text(fragments));
+                        Ok(())
+                    },
+                    _ => Err(Error::InvalidContext(format!(
+                        "heading end is expected but got {:?}",
                         event,
                     ))),
                 }
@@ -595,6 +617,19 @@ mod tests {
             TextBlock::Text(vec![
                 (FragmentContent::Code("<unnamed>".to_string()), 0..9),
                 (FragmentContent::Text(" panicked at".to_string()), 9..21),
+            ]),
+        ]);
+    }
+
+    #[test]
+    fn extract_text_blocks_can_extract_from_text_including_heading() {
+        let input = "# The Title\n\nThe body.";
+        assert_eq!(extract_text_blocks(input).unwrap(), vec![
+            TextBlock::Text(vec![
+                (FragmentContent::Text("The Title".to_string()), 2..11),
+            ]),
+            TextBlock::Text(vec![
+                (FragmentContent::Text("The body.".to_string()), 13..22),
             ]),
         ]);
     }
